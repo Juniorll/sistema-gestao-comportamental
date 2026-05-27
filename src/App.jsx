@@ -22,15 +22,28 @@ import {
   addDoc, updateDoc, deleteDoc 
 } from 'firebase/firestore';
 
-// ⚠️ SUBSTITUA PELAS SUAS CHAVES AQUI ⚠️
-const firebaseConfig = {
-  apiKey: "AIzaSyDatN2TaSnamWCeAFpCdiQB7rO30CDFlFY",
-  authDomain: "gestao-comportamental-eece5.firebaseapp.com",
-  projectId: "gestao-comportamental-eece5",
-  storageBucket: "gestao-comportamental-eece5.firebasestorage.app",
-  messagingSenderId: "621280864444",
-  appId: "1:621280864444:web:84c7ea825caf772c5ac8b9"
-};
+// --- FIREBASE SETUP ---
+// Configuração adaptável: tenta usar o __firebase_config da plataforma primeiro, 
+// caso contrário, usa as variáveis de ambiente locais do Vite (.env)
+let firebaseConfig;
+if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+  firebaseConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
+} else {
+  // Puxando as chaves do arquivo .env (O GitHub não verá mais isso)
+  // Usamos um try/catch para evitar erros de compilação em ambientes que não suportam import.meta
+  try {
+    firebaseConfig = {
+      apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+      appId: import.meta.env.VITE_FIREBASE_APP_ID
+    };
+  } catch (e) {
+    firebaseConfig = {}; // Configuração vazia como fallback seguro
+  }
+}
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
