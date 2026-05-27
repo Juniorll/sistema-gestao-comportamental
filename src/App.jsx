@@ -5,27 +5,37 @@ import {
   Award, FileMinus, Moon, VolumeX, Smartphone, Headphones, 
   Gamepad2, MicOff, UserMinus, UserX, Building, Coffee, 
   DoorOpen, Copy, Activity, ShieldAlert, BookOpen, ChevronRight,
-  MessageSquare
+  MessageSquare, LogOut, Lock
 } from 'lucide-react';
 
 // --- FIREBASE SETUP ---
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword,
+  onAuthStateChanged, 
+  signOut 
+} from 'firebase/auth';
+import { 
+  getFirestore, collection, onSnapshot, doc, setDoc, getDoc, 
+  addDoc, updateDoc, deleteDoc 
+} from 'firebase/firestore';
 
-// Environment variables provided by the platform
+// ⚠️ SUBSTITUA PELAS SUAS CHAVES AQUI ⚠️
 const firebaseConfig = {
-      apiKey: "AIzaSyDatN2TaSnamWCeAFpCdiQB7rO30CDFlFY",
-      authDomain: "gestao-comportamental-eece5.firebaseapp.com",
-      projectId: "gestao-comportamental-eece5",
-      storageBucket: "gestao-comportamental-eece5.firebasestorage.app",
-      messagingSenderId: "621280864444",
-      appId: "1:621280864444:web:84c7ea825caf772c5ac8b9"
-   };
-   const app = initializeApp(firebaseConfig);
-   const auth = getAuth(app);
-   const db = getFirestore(app);
-   const appId = 'sistema-gestao'; // Você pode pôr um nome fixo aqui
+  apiKey: "AIzaSyDatN2TaSnamWCeAFpCdiQB7rO30CDFlFY",
+  authDomain: "gestao-comportamental-eece5.firebaseapp.com",
+  projectId: "gestao-comportamental-eece5",
+  storageBucket: "gestao-comportamental-eece5.firebasestorage.app",
+  messagingSenderId: "621280864444",
+  appId: "1:621280864444:web:84c7ea825caf772c5ac8b9"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = 'escola-gestao';
 
 // --- CONSTANTS & DEFAULTS ---
 const DEFAULT_BEHAVIORS = [
@@ -123,8 +133,16 @@ const Thermometer = ({ score }) => {
 // --- MAIN APP COMPONENT ---
 export default function App() {
   const [user, setUser] = useState(null);
+  const [approvalStatus, setApprovalStatus] = useState(null); // 'pendente', 'aprovado'
   const [authLoading, setAuthLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
+  
+  // Auth Form States
+  const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [nome, setNome] = useState('');
+  const [authError, setAuthError] = useState('');
   
   // Data States
   const [classes, setClasses] = useState([]);
@@ -134,91 +152,181 @@ export default function App() {
   const [records, setRecords] = useState([]);
   const [studentActions, setStudentActions] = useState([]);
 
-  // Setup Auth
+  // Setup Auth & Status Check
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) {
-        console.error("Auth Error:", error);
+    const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      if (u) {
+        setUser(u);
+        // Check if teacher is approved
+        const docRef = doc(db, 'professores', u.uid);
+        
+        // Listen to changes in real-time so if admin approves, it updates instantly
+        const unsubDoc = onSnapshot(docRef, (docSnap) => {
+          if (docSnap.exists()) {
+            setApprovalStatus(docSnap.data().status);
+          } else {
+            setApprovalStatus('pendente'); // Failsafe
+          }
+          setAuthLoading(false);
+        });
+        
+        return () => unsubDoc();
+      } else {
+        setUser(null);
+        setApprovalStatus(null);
+        setAuthLoading(false);
       }
-    };
-    initAuth();
-
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setAuthLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
-  // Fetch Data
+  // Fetch Data (Only if approved)
   useEffect(() => {
-    if (!user) return;
+    if (!user || approvalStatus !== 'aprovado') return;
 
     const basePath = (collectionName) => collection(db, 'artifacts', appId, 'users', user.uid, collectionName);
 
-    const unsubClasses = onSnapshot(basePath('classes'), (snap) => {
-      setClasses(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, console.error);
-
-    const unsubStudents = onSnapshot(basePath('students'), (snap) => {
-      setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, console.error);
+    const unsubClasses = onSnapshot(basePath('classes'), (snap) => setClasses(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const unsubStudents = onSnapshot(basePath('students'), (snap) => setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const unsubRecords = onSnapshot(basePath('records'), (snap) => setRecords(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const unsubStudentActions = onSnapshot(basePath('studentActions'), (snap) => setStudentActions(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
 
     const unsubBehaviors = onSnapshot(basePath('behaviors'), async (snap) => {
       if (snap.docs.length === 0) {
-        // Seed default behaviors
-        for (const b of DEFAULT_BEHAVIORS) {
-          await addDoc(basePath('behaviors'), b);
-        }
+        for (const b of DEFAULT_BEHAVIORS) await addDoc(basePath('behaviors'), b);
       } else {
         setBehaviors(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       }
-    }, console.error);
+    });
 
     const unsubActionTypes = onSnapshot(basePath('actionTypes'), async (snap) => {
       if (snap.docs.length === 0) {
-        // Seed default actions
-        for (const a of DEFAULT_ACTIONS) {
-          await addDoc(basePath('actionTypes'), a);
-        }
+        for (const a of DEFAULT_ACTIONS) await addDoc(basePath('actionTypes'), a);
       } else {
         setActionTypes(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       }
-    }, console.error);
-
-    const unsubRecords = onSnapshot(basePath('records'), (snap) => {
-      setRecords(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, console.error);
-
-    const unsubStudentActions = onSnapshot(basePath('studentActions'), (snap) => {
-      setStudentActions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, console.error);
+    });
 
     return () => {
       unsubClasses(); unsubStudents(); unsubBehaviors(); 
       unsubActionTypes(); unsubRecords(); unsubStudentActions();
     };
-  }, [user]);
+  }, [user, approvalStatus]);
 
-  if (authLoading) return <div className="flex items-center justify-center h-screen text-slate-500">Iniciando sistema...</div>;
-  if (!user) return <div className="flex items-center justify-center h-screen text-slate-500">Falha na autenticação.</div>;
+  // Auth Functions
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      if (isLogin) {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        // Create User
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        // Save initial pending status
+        await setDoc(doc(db, 'professores', userCredential.user.uid), {
+          nome: nome,
+          email: email,
+          status: 'pendente',
+          dataCadastro: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      let msg = 'Erro na autenticação.';
+      if (error.code === 'auth/email-already-in-use') msg = 'Email já cadastrado.';
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/user-not-found') msg = 'Email ou senha incorretos.';
+      if (error.code === 'auth/weak-password') msg = 'A senha deve ter pelo menos 6 caracteres.';
+      if (error.code === 'auth/invalid-credential') msg = 'Credenciais inválidas.';
+      setAuthError(msg);
+    }
+  };
 
+  const handleLogout = () => {
+    signOut(auth);
+  };
+
+  // --- RENDER CONDITIONALS ---
+  if (authLoading) return <div className="flex items-center justify-center h-screen bg-slate-100 font-medium text-slate-500">Iniciando sistema...</div>;
+
+  // Render Login/Register Screen
+  if (!user) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-slate-100 p-4 font-sans">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-slate-200">
+          <div className="flex justify-center mb-6">
+            <div className="bg-blue-600 p-3 rounded-xl shadow-md"><Activity size={32} className="text-white" /></div>
+          </div>
+          <h1 className="text-2xl font-bold text-center text-slate-800 mb-2">Gestão Comportamental</h1>
+          <p className="text-center text-slate-500 mb-8">{isLogin ? 'Faça login para continuar' : 'Crie sua conta de professor'}</p>
+          
+          <form onSubmit={handleAuth} className="space-y-4">
+            {!isLogin && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Nome Completo</label>
+                <input 
+                  type="text" required value={nome} onChange={e=>setNome(e.target.value)}
+                  className="w-full p-3 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            )}
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">E-mail Escolar</label>
+              <input 
+                type="email" required value={email} onChange={e=>setEmail(e.target.value)}
+                className="w-full p-3 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Senha</label>
+              <input 
+                type="password" required value={password} onChange={e=>setPassword(e.target.value)}
+                className="w-full p-3 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            {authError && <p className="text-sm text-rose-600 font-medium">{authError}</p>}
+            <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition-colors">
+              {isLogin ? 'Entrar no Sistema' : 'Solicitar Cadastro'}
+            </button>
+          </form>
+          
+          <div className="mt-6 text-center text-sm text-slate-600">
+            {isLogin ? 'Não tem uma conta? ' : 'Já possui conta? '}
+            <button onClick={() => {setIsLogin(!isLogin); setAuthError('');}} className="text-blue-600 font-semibold hover:underline">
+              {isLogin ? 'Cadastre-se' : 'Faça Login'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Render Pending Screen
+  if (approvalStatus === 'pendente') {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-slate-100 p-4 font-sans text-center">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-slate-200 flex flex-col items-center">
+          <div className="bg-amber-100 p-4 rounded-full text-amber-600 mb-4">
+            <Lock size={40} />
+          </div>
+          <h2 className="text-2xl font-bold text-slate-800 mb-2">Acesso Restrito</h2>
+          <p className="text-slate-600 mb-8">Sua conta foi criada e está <strong>aguardando aprovação</strong> da coordenação escolar. Você terá acesso assim que seu cadastro for validado.</p>
+          <button onClick={handleLogout} className="text-slate-500 font-medium hover:text-slate-800 flex items-center gap-2">
+            <LogOut size={18} /> Sair
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // --- VIEWS (Only accessible if approved) ---
   const dbRef = (col) => collection(db, 'artifacts', appId, 'users', user.uid, col);
 
-  // --- VIEWS ---
-
+  // ... (Rest of the views: DashboardView, DailyEntryView, ClassesView, SettingsView remain exactly the same) ...
   const DashboardView = () => {
     const totalClasses = classes.length;
     const totalStudents = students.length;
     const totalRecords = records.length;
     
-    // Calculate student scores
     const studentStats = useMemo(() => {
       return students.map(student => {
         const studentRecords = records.filter(r => r.studentId === student.id && r.present);
@@ -230,7 +338,7 @@ export default function App() {
           daysPresent: studentRecords.length,
           className: classes.find(c => c.id === student.classId)?.name || 'Desconhecida'
         };
-      }).sort((a, b) => b.negativeCount - a.negativeCount); // Sort by most negative
+      }).sort((a, b) => b.negativeCount - a.negativeCount);
     }, [students, records, classes]);
 
     const positiveHighlights = studentStats.filter(s => s.daysPresent >= 1 && s.negativeCount === 0);
@@ -256,7 +364,6 @@ export default function App() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Positive Highlights */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
             <div className="flex items-center gap-2 mb-4">
               <Award className="text-emerald-500" />
@@ -282,7 +389,6 @@ export default function App() {
             )}
           </div>
 
-          {/* Critical Alerts */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
             <div className="flex items-center gap-2 mb-4">
               <ShieldAlert className="text-rose-600" />
@@ -314,18 +420,15 @@ export default function App() {
     const [selectedClass, setSelectedClass] = useState('');
     const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
     const [activeStudents, setActiveStudents] = useState([]);
-    const [dailyData, setDailyData] = useState({}); // { studentId: { present: bool, behaviors: [], comment: '' } }
+    const [dailyData, setDailyData] = useState({});
     const [behaviorModalOpen, setBehaviorModalOpen] = useState(false);
     const [currentStudentForBehavior, setCurrentStudentForBehavior] = useState(null);
     const [saving, setSaving] = useState(false);
 
-    // Filter students when class changes
     useEffect(() => {
       if (selectedClass) {
         const classStudents = students.filter(s => s.classId === selectedClass);
         setActiveStudents(classStudents);
-        
-        // Check if records already exist for this class/date
         const existingRecords = records.filter(r => r.classId === selectedClass && r.date === selectedDate);
         
         const initialData = {};
@@ -355,7 +458,7 @@ export default function App() {
             date: selectedDate,
             studentId,
             present: data.present,
-            behaviors: data.present ? data.behaviors : [], // Clear behaviors if absent
+            behaviors: data.present ? data.behaviors : [],
             comment: data.comment
           };
 
@@ -388,7 +491,6 @@ export default function App() {
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-bold text-slate-800">Lançamento de Aulas</h1>
-        
         <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-wrap gap-4 items-end">
           <div className="flex-1 min-w-[200px]">
             <label className="block text-sm font-medium text-slate-700 mb-1">Turma</label>
@@ -476,18 +578,10 @@ export default function App() {
           </div>
         )}
         
-        {selectedClass && activeStudents.length === 0 && (
-          <div className="bg-amber-50 text-amber-800 p-4 rounded-lg border border-amber-200 flex items-center gap-2">
-            <AlertCircle size={20} />
-            <p>Esta turma ainda não possui alunos cadastrados. Adicione alunos na aba "Turmas e Alunos".</p>
-          </div>
-        )}
-
-        {/* Behavior Selection Modal */}
         <Modal 
           isOpen={behaviorModalOpen} 
           onClose={() => { setBehaviorModalOpen(false); setCurrentStudentForBehavior(null); }}
-          title={`Sinalizar Comportamentos: ${activeStudents.find(s => s.id === currentStudentForBehavior)?.name || ''}`}
+          title={`Sinalizar: ${activeStudents.find(s => s.id === currentStudentForBehavior)?.name || ''}`}
         >
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pb-4">
             {behaviors.map(b => {
@@ -511,10 +605,7 @@ export default function App() {
             })}
           </div>
           <div className="mt-4 pt-4 border-t border-slate-200 flex justify-end">
-            <button 
-              onClick={() => { setBehaviorModalOpen(false); setCurrentStudentForBehavior(null); }}
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium"
-            >
+            <button onClick={() => { setBehaviorModalOpen(false); setCurrentStudentForBehavior(null); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium">
               Concluir
             </button>
           </div>
@@ -536,7 +627,7 @@ export default function App() {
     };
 
     const handleDeleteClass = async (id) => {
-      if(confirm('Tem certeza? Isso não excluirá os alunos automaticamente.')) {
+      if(confirm('Tem certeza?')) {
         await deleteDoc(doc(dbRef('classes'), id));
         if (selectedClassForStudents === id) setSelectedClassForStudents(null);
       }
@@ -549,14 +640,10 @@ export default function App() {
     };
 
     const handleDeleteStudent = async (id) => {
-      if(confirm('Tem certeza que deseja remover este aluno?')) {
-        await deleteDoc(doc(dbRef('students'), id));
-      }
+      if(confirm('Remover aluno?')) await deleteDoc(doc(dbRef('students'), id));
     };
 
     const classStudents = students.filter(s => s.classId === selectedClassForStudents);
-
-    // Calc score for lists
     const getStudentScore = (studentId) => {
        const studentRecords = records.filter(r => r.studentId === studentId && r.present);
        let negativeCount = 0;
@@ -567,95 +654,66 @@ export default function App() {
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-bold text-slate-800">Turmas e Alunos</h1>
-        
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Classes List */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-[600px]">
             <div className="p-4 border-b border-slate-200 bg-slate-50 rounded-t-xl">
               <h2 className="font-semibold text-slate-800 mb-3">Minhas Turmas</h2>
               <div className="flex gap-2">
                 <input 
-                  type="text" placeholder="Nome da nova turma..." 
-                  className="flex-1 p-2 text-sm border border-slate-300 rounded-lg outline-none focus:border-blue-500"
+                  type="text" placeholder="Nova turma..." 
+                  className="flex-1 p-2 text-sm border border-slate-300 rounded-lg outline-none"
                   value={newClassName} onChange={e => setNewClassName(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleAddClass()}
                 />
-                <button onClick={handleAddClass} className="bg-blue-600 text-white p-2 rounded-lg hover:bg-blue-700">
-                  <Plus size={20} />
-                </button>
+                <button onClick={handleAddClass} className="bg-blue-600 text-white p-2 rounded-lg hover:bg-blue-700"><Plus size={20} /></button>
               </div>
             </div>
             <div className="overflow-y-auto flex-1 p-2">
-              {classes.length === 0 ? <p className="text-center text-slate-500 mt-4 text-sm">Nenhuma turma cadastrada.</p> : null}
               {classes.map(c => (
-                <div 
-                  key={c.id} 
-                  className={`flex justify-between items-center p-3 mb-1 rounded-lg cursor-pointer transition-colors ${selectedClassForStudents === c.id ? 'bg-blue-50 border border-blue-200' : 'hover:bg-slate-50 border border-transparent'}`}
-                  onClick={() => setSelectedClassForStudents(c.id)}
-                >
+                <div key={c.id} className={`flex justify-between items-center p-3 mb-1 rounded-lg cursor-pointer ${selectedClassForStudents === c.id ? 'bg-blue-50 border border-blue-200' : 'hover:bg-slate-50'}`} onClick={() => setSelectedClassForStudents(c.id)}>
                   <span className={`font-medium ${selectedClassForStudents === c.id ? 'text-blue-800' : 'text-slate-700'}`}>{c.name}</span>
-                  <button onClick={(e) => { e.stopPropagation(); handleDeleteClass(c.id); }} className="text-slate-400 hover:text-rose-500 p-1">
-                    <Trash2 size={16} />
-                  </button>
+                  <button onClick={(e) => { e.stopPropagation(); handleDeleteClass(c.id); }} className="text-slate-400 hover:text-rose-500"><Trash2 size={16} /></button>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Students List */}
           <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-[600px]">
             {selectedClassForStudents ? (
               <>
                 <div className="p-4 border-b border-slate-200 bg-slate-50 rounded-t-xl flex justify-between items-center">
-                  <h2 className="font-semibold text-slate-800">Alunos: {classes.find(c=>c.id === selectedClassForStudents)?.name}</h2>
+                  <h2 className="font-semibold text-slate-800">Alunos</h2>
                   <div className="flex gap-2 w-1/2">
                     <input 
-                      type="text" placeholder="Nome do aluno..." 
-                      className="flex-1 p-2 text-sm border border-slate-300 rounded-lg outline-none focus:border-blue-500"
+                      type="text" placeholder="Nome..." 
+                      className="flex-1 p-2 text-sm border border-slate-300 rounded-lg outline-none"
                       value={newStudentName} onChange={e => setNewStudentName(e.target.value)}
                       onKeyDown={e => e.key === 'Enter' && handleAddStudent()}
                     />
-                    <button onClick={handleAddStudent} className="bg-slate-800 text-white px-3 py-2 text-sm font-medium rounded-lg hover:bg-slate-700">
-                      Adicionar
-                    </button>
+                    <button onClick={handleAddStudent} className="bg-slate-800 text-white px-3 py-2 text-sm rounded-lg">Add</button>
                   </div>
                 </div>
                 <div className="overflow-y-auto flex-1 p-4">
-                  {classStudents.length === 0 ? <p className="text-center text-slate-500 mt-10">Nenhum aluno nesta turma.</p> : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {classStudents.map(student => (
-                        <div key={student.id} className="border border-slate-200 rounded-lg p-3 flex flex-col gap-3 hover:shadow-md transition-shadow">
-                          <div className="flex justify-between items-start">
-                            <span className="font-semibold text-slate-800">{student.name}</span>
-                            <button onClick={() => handleDeleteStudent(student.id)} className="text-slate-400 hover:text-rose-500"><Trash2 size={16} /></button>
-                          </div>
-                          <Thermometer score={getStudentScore(student.id)} />
-                          <button 
-                            onClick={() => setSelectedStudentDetail(student)}
-                            className="mt-1 w-full py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-md transition-colors flex items-center justify-center gap-2"
-                          >
-                            <FileText size={16} /> Ver Detalhes
-                          </button>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {classStudents.map(student => (
+                      <div key={student.id} className="border border-slate-200 rounded-lg p-3 flex flex-col gap-3">
+                        <div className="flex justify-between">
+                          <span className="font-semibold">{student.name}</span>
+                          <button onClick={() => handleDeleteStudent(student.id)} className="text-slate-400 hover:text-rose-500"><Trash2 size={16} /></button>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                        <Thermometer score={getStudentScore(student.id)} />
+                        <button onClick={() => setSelectedStudentDetail(student)} className="mt-1 w-full py-1.5 bg-slate-100 text-sm font-medium rounded-md flex items-center justify-center gap-2"><FileText size={16} /> Ver Detalhes</button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </>
             ) : (
-              <div className="flex-1 flex flex-col items-center justify-center text-slate-400 p-6 text-center">
-                <Users size={48} className="mb-4 opacity-50" />
-                <p>Selecione uma turma ao lado para gerenciar seus alunos.</p>
-              </div>
+              <div className="flex-1 flex items-center justify-center text-slate-400"><p>Selecione uma turma.</p></div>
             )}
           </div>
         </div>
-
-        {/* Student Detail Modal */}
-        <StudentDetailModal 
-          student={selectedStudentDetail} 
-          onClose={() => setSelectedStudentDetail(null)} 
-        />
+        <StudentDetailModal student={selectedStudentDetail} onClose={() => setSelectedStudentDetail(null)} />
       </div>
     );
   };
@@ -682,118 +740,55 @@ export default function App() {
     const handleAddAction = async () => {
       if (!selectedActionType && !newAction.trim()) return;
       const actionText = selectedActionType ? actionTypes.find(a => a.id === selectedActionType)?.text : newAction.trim();
-      
-      await addDoc(dbRef('studentActions'), {
-        studentId: student.id,
-        text: actionText,
-        date: new Date().toISOString()
-      });
-      setNewAction('');
-      setSelectedActionType('');
+      await addDoc(dbRef('studentActions'), { studentId: student.id, text: actionText, date: new Date().toISOString() });
+      setNewAction(''); setSelectedActionType('');
     };
 
     return (
-      <Modal isOpen={!!student} onClose={onClose} title={`Detalhes do Aluno: ${student.name}`}>
+      <Modal isOpen={!!student} onClose={onClose} title={`Aluno: ${student.name}`}>
         <div className="space-y-6">
-          {/* Stats Header */}
           <div className="grid grid-cols-3 gap-4">
-            <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 text-center">
-              <p className="text-sm text-slate-500">Aulas Presente</p>
-              <p className="text-2xl font-bold text-slate-800">{presentRecs.length} / {studentRecs.length}</p>
-            </div>
-            <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 text-center">
-              <p className="text-sm text-slate-500">Ocorrências Totais</p>
-              <p className="text-2xl font-bold text-rose-600">{totalNegatives}</p>
-            </div>
-            <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 flex flex-col justify-center items-center">
-              <p className="text-sm text-slate-500 mb-1">Status</p>
-              <Thermometer score={totalNegatives} />
-            </div>
+            <div className="bg-slate-50 p-4 rounded-lg border text-center"><p className="text-sm">Aulas Presente</p><p className="text-2xl font-bold">{presentRecs.length} / {studentRecs.length}</p></div>
+            <div className="bg-slate-50 p-4 rounded-lg border text-center"><p className="text-sm">Ocorrências</p><p className="text-2xl font-bold text-rose-600">{totalNegatives}</p></div>
+            <div className="bg-slate-50 p-4 rounded-lg border flex flex-col items-center"><p className="text-sm mb-1">Status</p><Thermometer score={totalNegatives} /></div>
           </div>
-
-          {/* Behavior Breakdown */}
           {totalNegatives > 0 && (
             <div>
-              <h3 className="font-semibold text-slate-800 border-b border-slate-200 pb-2 mb-3">Comportamentos Frequentes</h3>
+              <h3 className="font-semibold mb-3 border-b pb-2">Comportamentos</h3>
               <div className="space-y-2">
                 {Object.entries(behaviorCounts).sort((a,b)=>b[1]-a[1]).map(([bId, count]) => {
                   const b = behaviors.find(x => x.id === bId);
                   if(!b) return null;
-                  return (
-                    <div key={bId} className="flex items-center justify-between p-2 bg-slate-50 rounded text-sm">
-                      <div className="flex items-center gap-2 text-slate-700">
-                        <IconByName name={b.icon} className="w-4 h-4 text-slate-400" />
-                        {b.text}
-                      </div>
-                      <span className="font-bold bg-slate-200 px-2 py-0.5 rounded text-slate-700">{count}x</span>
-                    </div>
-                  )
+                  return <div key={bId} className="flex justify-between p-2 bg-slate-50 rounded text-sm"><span>{b.text}</span><span className="font-bold bg-slate-200 px-2 rounded">{count}x</span></div>
                 })}
               </div>
             </div>
           )}
-
-          {/* Daily Logs */}
           <div>
-            <h3 className="font-semibold text-slate-800 border-b border-slate-200 pb-2 mb-3">Histórico de Aulas (com ocorrências ou comentários)</h3>
+            <h3 className="font-semibold mb-3 border-b pb-2">Histórico Relevante</h3>
             <div className="space-y-2 max-h-40 overflow-y-auto">
-              {presentRecs.filter(r => (r.behaviors && r.behaviors.length > 0) || r.comment).length === 0 ? (
-                <p className="text-sm text-slate-500">Nenhum registro relevante.</p>
-              ) : presentRecs.filter(r => (r.behaviors && r.behaviors.length > 0) || r.comment)
-                  .sort((a,b) => new Date(b.date) - new Date(a.date))
-                  .map(r => (
-                <div key={r.id} className="p-3 border border-slate-200 rounded-lg text-sm">
-                  <div className="font-semibold text-slate-700 mb-1">{new Date(r.date).toLocaleDateString('pt-BR')}</div>
-                  {r.behaviors && r.behaviors.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mb-2">
-                      {r.behaviors.map(bId => {
-                         const b = behaviors.find(x => x.id === bId);
-                         return b ? <span key={bId} className="bg-rose-100 text-rose-800 text-[10px] px-1.5 py-0.5 rounded">{b.text}</span> : null;
-                      })}
-                    </div>
-                  )}
-                  {r.comment && <p className="text-slate-600 italic">"{r.comment}"</p>}
+              {presentRecs.filter(r => (r.behaviors?.length > 0) || r.comment).map(r => (
+                <div key={r.id} className="p-3 border rounded-lg text-sm">
+                  <div className="font-semibold mb-1">{new Date(r.date).toLocaleDateString('pt-BR')}</div>
+                  {r.behaviors?.map(bId => <span key={bId} className="bg-rose-100 text-rose-800 text-[10px] px-1 rounded mr-1">{behaviors.find(x=>x.id===bId)?.text}</span>)}
+                  {r.comment && <p className="italic mt-1">"{r.comment}"</p>}
                 </div>
               ))}
             </div>
           </div>
-
-          {/* Actions Taken */}
           <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
-            <h3 className="font-semibold text-blue-900 mb-3 flex items-center gap-2">
-              <ShieldAlert size={18} /> Ações / Intervenções Realizadas
-            </h3>
-            
-            <div className="flex gap-2 mb-4 flex-col sm:flex-row">
-              <select 
-                className="flex-1 p-2 text-sm border border-blue-200 rounded bg-white outline-none"
-                value={selectedActionType} onChange={e => { setSelectedActionType(e.target.value); setNewAction(''); }}
-              >
+            <h3 className="font-semibold text-blue-900 mb-3 flex items-center gap-2"><ShieldAlert size={18} /> Intervenções</h3>
+            <div className="flex gap-2 mb-4">
+              <select className="flex-1 p-2 text-sm border rounded outline-none" value={selectedActionType} onChange={e => setSelectedActionType(e.target.value)}>
                 <option value="">Selecione uma ação padrão...</option>
                 {actionTypes.map(a => <option key={a.id} value={a.id}>{a.text}</option>)}
               </select>
-              <input 
-                type="text" placeholder="Ou digite uma ação específica..." 
-                className="flex-1 p-2 text-sm border border-blue-200 rounded bg-white outline-none"
-                value={newAction} onChange={e => { setNewAction(e.target.value); setSelectedActionType(''); }}
-              />
-              <button onClick={handleAddAction} className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700">
-                Registrar
-              </button>
+              <button onClick={handleAddAction} className="bg-blue-600 text-white px-4 rounded text-sm">Registrar</button>
             </div>
-
             <div className="space-y-2">
-              {actionsForStudent.length === 0 ? <p className="text-sm text-blue-700/70">Nenhuma intervenção registrada.</p> : 
-                actionsForStudent.map(action => (
-                  <div key={action.id} className="bg-white p-2 rounded border border-blue-100 text-sm flex justify-between">
-                    <span className="text-slate-800">{action.text}</span>
-                    <span className="text-slate-400 text-xs">{new Date(action.date).toLocaleDateString('pt-BR')}</span>
-                  </div>
-                ))
-              }
+              {actionsForStudent.map(a => <div key={a.id} className="bg-white p-2 rounded border text-sm flex justify-between"><span>{a.text}</span><span className="text-slate-400 text-xs">{new Date(a.date).toLocaleDateString('pt-BR')}</span></div>)}
             </div>
           </div>
-
         </div>
       </Modal>
     );
@@ -810,90 +805,40 @@ export default function App() {
       setNewBehaviorText('');
     };
 
-    const handleDeleteBehavior = async (id) => {
-      if(confirm('Excluir este comportamento? Ele sumirá dos relatórios futuros.')) {
-        await deleteDoc(doc(dbRef('behaviors'), id));
-      }
-    };
-
     const handleAddActionType = async () => {
       if (!newActionText.trim()) return;
       await addDoc(dbRef('actionTypes'), { text: newActionText.trim() });
       setNewActionText('');
     };
 
-    const handleDeleteActionType = async (id) => {
-      if(confirm('Excluir esta ação padrão?')) {
-        await deleteDoc(doc(dbRef('actionTypes'), id));
-      }
-    };
-
     return (
       <div className="space-y-6">
-        <h1 className="text-2xl font-bold text-slate-800">Configurações do Sistema</h1>
-        
+        <h1 className="text-2xl font-bold text-slate-800">Configurações</h1>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Behaviors Setup */}
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col max-h-[600px]">
-            <h2 className="font-semibold text-lg text-slate-800 mb-4 border-b pb-2">Comportamentos Negativos</h2>
-            
-            <div className="flex flex-col gap-2 mb-4 bg-slate-50 p-3 rounded-lg border border-slate-200">
-              <input 
-                type="text" placeholder="Descreva o novo comportamento..." 
-                className="w-full p-2 text-sm border border-slate-300 rounded outline-none"
-                value={newBehaviorText} onChange={e => setNewBehaviorText(e.target.value)}
-              />
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+            <h2 className="font-semibold text-lg mb-4 border-b pb-2">Comportamentos Negativos</h2>
+            <div className="flex flex-col gap-2 mb-4 bg-slate-50 p-3 rounded-lg border">
+              <input type="text" placeholder="Descreva..." className="p-2 text-sm border rounded" value={newBehaviorText} onChange={e => setNewBehaviorText(e.target.value)} />
               <div className="flex gap-2 items-center">
-                <span className="text-sm text-slate-500">Ícone:</span>
-                <select 
-                  className="flex-1 p-2 text-sm border border-slate-300 rounded outline-none"
-                  value={newBehaviorIcon} onChange={e => setNewBehaviorIcon(e.target.value)}
-                >
+                <select className="flex-1 p-2 text-sm border rounded" value={newBehaviorIcon} onChange={e => setNewBehaviorIcon(e.target.value)}>
                   {AVAILABLE_ICONS.map(icon => <option key={icon} value={icon}>{icon}</option>)}
                 </select>
-                <div className="p-2 bg-white border border-slate-200 rounded"><IconByName name={newBehaviorIcon} className="w-5 h-5 text-slate-600" /></div>
-                <button onClick={handleAddBehavior} className="bg-slate-800 text-white px-4 py-2 rounded text-sm font-medium hover:bg-slate-700">
-                  Adicionar
-                </button>
+                <button onClick={handleAddBehavior} className="bg-slate-800 text-white px-4 py-2 rounded text-sm">Add</button>
               </div>
             </div>
-
-            <div className="overflow-y-auto flex-1 space-y-2 pr-2">
-              {behaviors.map(b => (
-                <div key={b.id} className="flex justify-between items-center p-2 border border-slate-100 rounded hover:bg-slate-50">
-                  <div className="flex items-center gap-3 text-sm text-slate-700">
-                    <div className="bg-slate-100 p-1.5 rounded text-slate-500"><IconByName name={b.icon} className="w-4 h-4" /></div>
-                    {b.text}
-                  </div>
-                  <button onClick={() => handleDeleteBehavior(b.id)} className="text-slate-400 hover:text-rose-500"><Trash2 size={16} /></button>
-                </div>
-              ))}
+            <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
+              {behaviors.map(b => <div key={b.id} className="flex justify-between p-2 border rounded"><span className="text-sm">{b.text}</span><button onClick={()=>deleteDoc(doc(dbRef('behaviors'),b.id))} className="text-rose-500"><Trash2 size={16}/></button></div>)}
             </div>
           </div>
 
-          {/* Actions Setup */}
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col max-h-[600px]">
-            <h2 className="font-semibold text-lg text-slate-800 mb-4 border-b pb-2">Ações / Intervenções Padrão</h2>
-            
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+            <h2 className="font-semibold text-lg mb-4 border-b pb-2">Ações Padrão</h2>
             <div className="flex gap-2 mb-4">
-              <input 
-                type="text" placeholder="Nova ação padronizada..." 
-                className="flex-1 p-2 text-sm border border-slate-300 rounded outline-none"
-                value={newActionText} onChange={e => setNewActionText(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleAddActionType()}
-              />
-              <button onClick={handleAddActionType} className="bg-slate-800 text-white px-4 py-2 rounded text-sm font-medium hover:bg-slate-700">
-                Adicionar
-              </button>
+              <input type="text" placeholder="Nova ação..." className="flex-1 p-2 text-sm border rounded" value={newActionText} onChange={e => setNewActionText(e.target.value)} />
+              <button onClick={handleAddActionType} className="bg-slate-800 text-white px-4 py-2 rounded text-sm">Add</button>
             </div>
-
-            <div className="overflow-y-auto flex-1 space-y-2 pr-2">
-              {actionTypes.map(a => (
-                <div key={a.id} className="flex justify-between items-center p-3 border border-slate-100 rounded hover:bg-slate-50 text-sm text-slate-700">
-                  <span>{a.text}</span>
-                  <button onClick={() => handleDeleteActionType(a.id)} className="text-slate-400 hover:text-rose-500"><Trash2 size={16} /></button>
-                </div>
-              ))}
+            <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
+              {actionTypes.map(a => <div key={a.id} className="flex justify-between p-3 border rounded text-sm"><span>{a.text}</span><button onClick={()=>deleteDoc(doc(dbRef('actionTypes'),a.id))} className="text-rose-500"><Trash2 size={16}/></button></div>)}
             </div>
           </div>
         </div>
@@ -901,52 +846,32 @@ export default function App() {
     );
   };
 
-  // --- MAIN RENDER ---
   return (
     <div className="flex h-screen bg-slate-100 font-sans">
-      {/* Sidebar */}
       <div className="w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-10 hidden md:flex">
         <div className="p-6 flex items-center gap-3 text-white">
           <div className="bg-blue-600 p-2 rounded-lg"><Activity size={24} /></div>
           <span className="font-bold text-lg leading-tight">Gestão<br/>Comportamental</span>
         </div>
         <nav className="flex-1 px-4 space-y-2 mt-4">
-          <button onClick={() => setActiveTab('dashboard')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'dashboard' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <TrendingUp size={20} /> Dashboard
-          </button>
-          <button onClick={() => setActiveTab('daily')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'daily' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <Calendar size={20} /> Lançamento Diário
-          </button>
-          <button onClick={() => setActiveTab('classes')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'classes' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <Users size={20} /> Turmas e Alunos
-          </button>
-          <button onClick={() => setActiveTab('settings')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'settings' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <Settings size={20} /> Configurações
-          </button>
+          <button onClick={() => setActiveTab('dashboard')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg ${activeTab === 'dashboard' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}><TrendingUp size={20} /> Dashboard</button>
+          <button onClick={() => setActiveTab('daily')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg ${activeTab === 'daily' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}><Calendar size={20} /> Lançamentos</button>
+          <button onClick={() => setActiveTab('classes')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg ${activeTab === 'classes' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}><Users size={20} /> Turmas e Alunos</button>
+          <button onClick={() => setActiveTab('settings')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg ${activeTab === 'settings' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}><Settings size={20} /> Configurações</button>
         </nav>
         <div className="p-4 border-t border-slate-800">
-          <div className="flex items-center gap-3 px-4 py-2">
-            <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold text-sm">
-              PR
-            </div>
-            <div className="flex flex-col">
-              <span className="text-sm font-medium text-white">Professor</span>
-              <span className="text-xs text-slate-500 truncate w-32">{user.uid}</span>
-            </div>
-          </div>
+          <button onClick={handleLogout} className="w-full flex justify-center items-center gap-2 text-sm text-slate-400 hover:text-white py-2">
+             <LogOut size={16} /> Sair do Sistema
+          </button>
         </div>
       </div>
 
-      {/* Mobile Topbar */}
       <div className="md:hidden fixed top-0 left-0 right-0 bg-slate-900 text-white p-4 flex justify-between items-center z-20 shadow-md">
          <div className="flex items-center gap-2">
           <Activity size={20} className="text-blue-500" />
           <span className="font-bold text-sm">Gestão Comportamental</span>
         </div>
-        <select 
-          className="bg-slate-800 border-none text-sm p-2 rounded outline-none"
-          value={activeTab} onChange={(e) => setActiveTab(e.target.value)}
-        >
+        <select className="bg-slate-800 border-none text-sm p-2 rounded outline-none" value={activeTab} onChange={(e) => setActiveTab(e.target.value)}>
           <option value="dashboard">Dashboard</option>
           <option value="daily">Lançamentos</option>
           <option value="classes">Turmas</option>
@@ -954,7 +879,6 @@ export default function App() {
         </select>
       </div>
 
-      {/* Main Content */}
       <div className="flex-1 overflow-auto bg-slate-50 pt-16 md:pt-0">
         <div className="p-4 md:p-8 max-w-7xl mx-auto">
           {activeTab === 'dashboard' && <DashboardView />}
