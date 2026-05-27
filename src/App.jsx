@@ -321,7 +321,6 @@ export default function App() {
   // --- VIEWS (Only accessible if approved) ---
   const dbRef = (col) => collection(db, 'artifacts', appId, 'users', user.uid, col);
 
-  // ... (Rest of the views: DashboardView, DailyEntryView, ClassesView, SettingsView remain exactly the same) ...
   const DashboardView = () => {
     const totalClasses = classes.length;
     const totalStudents = students.length;
@@ -427,7 +426,11 @@ export default function App() {
 
     useEffect(() => {
       if (selectedClass) {
-        const classStudents = students.filter(s => s.classId === selectedClass);
+        // Filtra alunos da turma e ordena em ordem alfabética
+        const classStudents = students
+          .filter(s => s.classId === selectedClass)
+          .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+          
         setActiveStudents(classStudents);
         const existingRecords = records.filter(r => r.classId === selectedClass && r.date === selectedDate);
         
@@ -643,7 +646,11 @@ export default function App() {
       if(confirm('Remover aluno?')) await deleteDoc(doc(dbRef('students'), id));
     };
 
-    const classStudents = students.filter(s => s.classId === selectedClassForStudents);
+    // Ordenação alfabética também aplicada aqui na visualização das turmas
+    const classStudents = students
+      .filter(s => s.classId === selectedClassForStudents)
+      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+
     const getStudentScore = (studentId) => {
        const studentRecords = records.filter(r => r.studentId === studentId && r.present);
        let negativeCount = 0;
